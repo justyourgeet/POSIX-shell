@@ -23,9 +23,6 @@
 #include <algorithm>
 #include <cstring>
 
-#include "visuals.hpp"
-
-
 std::unordered_map<std::string, std::string> aliases;
 std::unordered_map<std::string, std::string> shell_vars;
 
@@ -72,9 +69,9 @@ std::string fetch_branch(){
                         line.pop_back();
                     }
                     if(line.rfind("ref: refs/heads/",0) == 0){
-                        return " [" + line.substr(16) + "] ";
+                        return "" + line.substr(16) + "";
                     }
-                    return " [" + line.substr(0,7) + "] ";
+                    return "" + line.substr(0,7) + "";
                 }
             }
         }
@@ -747,7 +744,6 @@ int main(){
     signal(SIGTSTP, SIG_IGN);
 
     tcsetpgrp(STDIN_FILENO, shell_pid);
-    print_splash();
     std::string command;
     rl_attempted_completion_function = shell_completion;
     rl_variable_bind("show-all-if-ambiguous", "on");
@@ -765,7 +761,7 @@ int main(){
                 ++it;
             }
         }
-        std::string prompt = build_prompt(fetch_path(), fetch_branch(), last_exit_status);
+        std::string prompt = "\n" + fetch_path() + " on " + fetch_branch() + " >  ";
         char *line = readline(prompt.c_str());
         if(!line){
             std::cout << "\n";
@@ -781,5 +777,6 @@ int main(){
         if(args[0] == "exit" || args[0] == "quit") break;
         run_line(args);
     }
+    std::cout << "\n";
     return 0;
 }
