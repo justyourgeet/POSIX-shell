@@ -20,6 +20,8 @@
 #include <readline/history.h>
 #include <glob.h>
 #include <unordered_map>
+#include <algorithm>
+#include <cstring>
 
 #include "visuals.hpp"
 
@@ -83,67 +85,64 @@ std::string fetch_branch(){
     return std::string();
 }
 
+const char MASK = '\x01';
+
 std::vector<std::string> tokenizer(const std::string &command){
     std::vector<std::string> args;
-    std::string current;
+    std::string cur;
     bool in_token = false;
-    char quote_char = '\0';
+    char q = '\0';
+
+    auto flush = [&]{ if(in_token){ args.push_back(cur); cur.clear(); in_token = false; } };
+    auto lit = [&](char c, const char *special){
+        if(strchr(special, c)) cur += MASK;
+        cur += c;
+    };
 
     for(size_t i = 0; i < command.size(); i++){
         char c = command[i];
 
-        if(quote_char != '\0'){
-            if(c == quote_char){
-                quote_char = '\0';
-            }
-            else{
-                current += c;
-            }
+        if(q){
+            if(c == q) q = '\0';
+            else lit(c, q == '\'' ? "*?|&;<>$" : "*?|&;<>");
             continue;
         }
-
-        if(c == '"' || c == '\''){
-            quote_char = c;
-            in_token = true;
-            continue;
-        }
-
+        if(c == '"' || c == '\''){ q = c; in_token = true; continue; }
         if(c == '\\' && i + 1 < command.size()){
-            current += command[i + 1];
-            i++;
+            lit(command[++i], "*?|&;<>$");
             in_token = true;
             continue;
         }
-
-        if(std::isspace(static_cast<unsigned char>(c))){
-            if(in_token){
-                args.push_back(current);
-                current.clear();
-                in_token = false;
+        if(std::isspace((unsigned char)c)){ flush(); continue; }
+        if(c == '|' || c == '&' || c == ';' || c == '<' || c == '>'){
+            flush();
+            std::string op(1, c);
+            if((c == '|' || c == '&' || c == '>') && i + 1 < command.size() && command[i+1] == c){
+                op += c; i++;
             }
+            args.push_back(op);
             continue;
         }
-        current += c;
+        cur += c;
         in_token = true;
     }
-    if(in_token) {args.push_back(current);}
+    flush();
     return args;
 }
 
-void cmd_cd(const std::vector<std::string> &args){
-    if(args.size() < 2){
-        const char *home = getenv("HOME");
-        if(!home) {std::cerr << "home not found !!! \n";}
-        std::error_code ec;
-        fs::current_path(home,ec);
-        if(ec) {std::cerr << "cd: " << ec.message() << "not found \n";}
-        return;
-    }
-    fs::path target = args[1];
-    std::error_code ec;
-    fs::current_path(target,ec);
-    if(ec) {std::cerr << "cd: " << ec.message() << "not found \n";}
+void unmask(std::vector<std::string> &v){
+    for(auto &s : v) s.erase(std::remove(s.begin(), s.end(), MASK), s.end());
 }
+
+void cmd_cd(const std::vector<std::string> &args){
+    const char *dest = args.size() < 2 ? getenv("HOME") : args[1].c_str();
+    if(!dest){ std::cerr << "cd: HOME not set\n"; last_exit_status = 1; return; }
+    std::error_code ec;
+    fs::current_path(dest, ec);
+    if(ec){ std::cerr << "cd: " << dest << ": " << ec.message() << "\n"; last_exit_status = 1; }
+    else last_exit_status = 0;
+}
+
 
 struct Redirect{
     std::string out_file;
@@ -214,7 +213,7 @@ void run_pipeline(std::vector<std::vector<std::string>> &commands){
     int fd[2];
     
     std::vector<pid_t> pids;
-    pid_t pgid = 0; // process group id for whole pipeline 
+    pid_t pgid = 0;  
 
     for(int i = 0; i < num; i++){
         pipe(fd);
@@ -239,6 +238,7 @@ void run_pipeline(std::vector<std::vector<std::string>> &commands){
             close(fd[1]);
 
             Redirect r = parse_redirects(commands[i]);
+            unmask(commands[i]);
             apply_redirects(r);
             
             std::vector<char *> argv;
@@ -411,6 +411,12 @@ void display_matches_with_gap(char **matches, int num_matches, int max_length){
 std::string expand_env(const std::string &token){
     std::string result;
     for(size_t i = 0; i < token.size(); i++){
+        if(token[i] == MASK && i + 1 < token.size()){
+            result += token[i];
+            result += token[i+1];
+            i++;
+            continue;
+        }
         if(token[i] == '$' && i + 1 < token.size()){
             if(token[i+1] == '?'){
                 result += std::to_string(last_exit_status);
@@ -431,7 +437,7 @@ std::string expand_env(const std::string &token){
                     const char *val = getenv(var_name.c_str());
                     if(val) result += val;
                 }
-                i = j - 1;   
+                i = j - 1;
                 continue;
             }
         }
@@ -441,6 +447,7 @@ std::string expand_env(const std::string &token){
 }
 
 std::vector<std::string> expand_glob(const std::string &token){
+    if(token.find(MASK) != std::string::npos) return {token};
     if(token.find('*') == std::string::npos && token.find('?') == std::string::npos){
         return {token};
     }
@@ -552,6 +559,8 @@ void run_external(std::vector<std::string> &args){
         args.pop_back();
     }
     Redirect r = parse_redirects(args);
+    unmask(args);
+    if(args.empty()) return;
     std::vector<char *> argv;
     for(const auto &a: args){
         argv.push_back(const_cast<char*>(a.c_str()));
@@ -610,8 +619,28 @@ bool looks_like_assignment(const std::string &token){
     return true;
 }
 
+bool run_builtin(std::vector<std::string> a){
+    unmask(a);
+    if(a.empty()) return false;
+    if(a[0] == "cd"){ cmd_cd(a); return true; }
+    if(a[0] == "jobs"){ cmd_jobs(); last_exit_status = 0; return true; }
+    if(a[0] == "fg"){ cmd_fg(a); return true; }
+    if(a[0] == "bg"){ cmd_bg(a); return true; }
+    if(a[0] == "alias"){ cmd_alias(a); last_exit_status = 0; return true; }
+    if(a[0] == "unalias"){ cmd_unaliase(a); last_exit_status = 0; return true; }
+    return false;
+}
+
 void run_line(std::vector<std::string> args){
     if(args.empty()) return;
+
+    if(args[0] == "if"){
+        std::vector<std::string> cond(args.begin() + 1, args.end());
+        run_if(cond);
+        return;
+    }
+    if(args[0] == "for"){ run_for(args); return; }
+
     if(args.size() == 1 && looks_like_assignment(args[0])){
         try_assign_var(args[0]);
         return;
@@ -627,13 +656,6 @@ void run_line(std::vector<std::string> args){
     args = expanded_args;
     if(args.empty()) return;
 
-    if(args[0] == "cd"){ cmd_cd(args); return; }
-    if(args[0] == "jobs"){ cmd_jobs(); return; }
-    if(args[0] == "fg"){ cmd_fg(args); return; }
-    if(args[0] == "bg"){ cmd_bg(args); return; }
-    if(args[0] == "alias"){ cmd_alias(args); return; }
-    if(args[0] == "unalias"){ cmd_unaliase(args); return; }
-
     std::vector<ChainSegment> chain = parse_chain(args);
     bool should_run = true;
     for(const auto &seg : chain){
@@ -641,8 +663,11 @@ void run_line(std::vector<std::string> args){
         std::vector<std::vector<std::string>> commands = parse_pipeline(seg.tokens);
         if(commands.empty()) continue;
         std::vector<std::string> seg_args = seg.tokens;
-        if(commands.size() == 1) run_external(seg_args);
+
+        if(commands.size() == 1 && run_builtin(seg_args)) {}
+        else if(commands.size() == 1) run_external(seg_args);
         else run_pipeline(commands);
+
         if(seg.op == "&&" && last_exit_status != 0) should_run = false;
         else if(seg.op == "||" && last_exit_status == 0) should_run = false;
     }
@@ -677,13 +702,13 @@ void run_if(std::vector<std::string> &condition_args){
 
     const auto &chosen = condition_true ? then_lines : else_lines;
     for(const auto &l : chosen){
+        if(l == "then") continue;
         std::vector<std::string> toks = tokenizer(l);
         run_line(toks);
     }
 }
 
 void run_for(std::vector<std::string> &header_args){
-    // header_args = ["for", "x", "in", "a", "b", "c"]
     if(header_args.size() < 4 || header_args[2] != "in"){
         std::cerr << "for: syntax error, expected: for VAR in LIST\n";
         return;
@@ -696,6 +721,7 @@ void run_for(std::vector<std::string> &header_args){
     for(const auto &item : items){
         shell_vars[var_name] = item;
         for(const auto &l : body){
+            if(l == "do") continue;
             std::vector<std::string> toks = tokenizer(l);
             run_line(toks);
         }
