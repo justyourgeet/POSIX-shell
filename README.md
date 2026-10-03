@@ -34,10 +34,6 @@ A POSIX-style shell written from scratch in C++17. Process management, job contr
 - readline integration: history, editing, tab completion over builtins and `$PATH`
 - Git-aware prompt showing the current branch
 
-**Neotech Inforbar**
-
--- displays an information about the device with an ASCII art
-
 ## Build
 
 Requires GNU readline (not the macOS-default libedit).
