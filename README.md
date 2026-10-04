@@ -1,6 +1,6 @@
 # POSIX shell
 
-A POSIX-style shell written from scratch in C++17. Process management, job control, and line editing are built directly on Unix syscalls — no shell libraries.
+A POSIX-style shell written from scratch in C++17. Process management, job control, and line editing are built directly on Unix syscalls no shell libraries.
 
 ![demo](assets/output.gif)
 
